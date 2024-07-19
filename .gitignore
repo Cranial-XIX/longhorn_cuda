@@ -1,3 +1,4 @@
 *.so
 *.egg*
 build/*
+*.pyc
