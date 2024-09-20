@@ -731,3 +731,51 @@ def longhorn_ref(
     if has_norm_weight:
         y = rms_norm_ref(y, norm_weight).to(y) * F.silu(rearrange(z, 'b d l -> b l d')).to(z)
     return F.linear(y, out_proj_weight)
+
+
+###############################################################################
+#
+# Bidirectional Longhorn Inner Function
+#
+###############################################################################
+
+
+def bi_longhorn_ref(
+    xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight, norm_weight=None, D=None, delta_bias=None,
+):
+    assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available. Please install causal-conv1d."
+    has_norm_weight = norm_weight is not None
+    L = xz.shape[-1]
+    R = delta_proj_weight.shape[1]
+    DD = (x_proj_weight.shape[0] - R) // 2
+
+    x, z = xz.chunk(2, dim=1)
+    x = causal_conv1d_fn(x, rearrange(conv1d_weight, "d 1 w -> d w"), conv1d_bias, activation="silu").contiguous()
+    x_dbl = F.linear(rearrange(x, 'b d l -> (b l) d'), x_proj_weight)  # (bl d)
+    delta = delta_proj_weight @ x_dbl[:, :R].t()
+    delta = rearrange(delta, "d (b l) -> b d l", l=L)
+
+    K = x_dbl[:, R:R+DD]  # (bl d)
+    K = rearrange(K, "(b l) dstate -> b dstate l", l=L).contiguous()
+
+    Q = x_dbl[:, -DD:]  # (bl d)
+    Q = rearrange(Q, "(b l) dstate -> b dstate l", l=L).contiguous()
+
+    if has_norm_weight:
+        online_z = None
+    else:
+        online_z = z
+
+    y = selective_scan_online7_fn(x, Q.to(x), K.to(x), delta.to(x),
+                                  D=D,
+                                  t_bias=delta_bias,
+                                  z=online_z, return_last_state=False)
+    y_b = selective_scan_online7_fn(x.flip([-1]), Q.to(x).flip([-1]), K.to(x).flip([-1]), delta.to(x).flip([-1]),
+                                    D=D,
+                                    t_bias=delta_bias,
+                                    z=online_z.flip([-1]), return_last_state=False)
+
+    y = rearrange(y + y_b, "b d l -> b l d")
+    if has_norm_weight:
+        y = rms_norm_ref(y, norm_weight).to(y) * F.silu(rearrange(z, 'b d l -> b l d')).to(z)
+    return y
