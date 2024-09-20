@@ -741,10 +741,10 @@ def longhorn_ref(
 
 
 def bi_longhorn_ref(
-    xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight, norm_weight, out_proj_weight, D=None, delta_bias=None,
+    xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight, norm_weight_forward, norm_weight_backward, out_proj_weight, D=None, delta_bias=None,
 ):
     assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available. Please install causal-conv1d."
-    has_norm_weight = norm_weight is not None
+
     L = xz.shape[-1]
     R = delta_proj_weight.shape[1]
     DD = (x_proj_weight.shape[0] - R) // 2
@@ -761,21 +761,16 @@ def bi_longhorn_ref(
     Q = x_dbl[:, -DD:]  # (bl d)
     Q = rearrange(Q, "(b l) dstate -> b dstate l", l=L).contiguous()
 
-    if has_norm_weight:
-        online_z = None
-    else:
-        online_z = z
-
     y = selective_scan_online7_fn(x, Q.to(x), K.to(x), delta.to(x),
                                   D=D,
                                   t_bias=delta_bias,
-                                  z=online_z, return_last_state=False)
+                                  z=None, return_last_state=False)
     y_b = selective_scan_online7_fn(x.flip([-1]), Q.to(x).flip([-1]), K.to(x).flip([-1]), delta.to(x).flip([-1]),
                                     D=D,
                                     t_bias=delta_bias,
-                                    z=online_z.flip([-1]), return_last_state=False)
-
-    y = rearrange(y + y_b, "b d l -> b l d")
-    if has_norm_weight:
-        y = rms_norm_ref(y, norm_weight).to(y) * F.silu(rearrange(z, 'b d l -> b l d')).to(z)
+                                    z=None, return_last_state=False)
+    y_b = y_b.flip([-1])
+    import pdb; pdb.set_trace()
+    y = rms_norm_ref(rearrange(y, 'b d l -> b l d'), norm_weight_forward).to(y) + rms_norm_ref(rearrange(y_b, 'b d l -> b l d'), norm_weight_backward).to(y_b)
+    y = y * F.silu(rearrange(z, 'b d l -> b l d')).to(z)
     return F.linear(y, out_proj_weight)
