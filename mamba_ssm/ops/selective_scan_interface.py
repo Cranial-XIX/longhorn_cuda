@@ -770,7 +770,6 @@ def bi_longhorn_ref(
                                     t_bias=delta_bias,
                                     z=None, return_last_state=False)
     y_b = y_b.flip([-1])
-    import pdb; pdb.set_trace()
     y = rms_norm_ref(rearrange(y, 'b d l -> b l d'), norm_weight_forward).to(y) + rms_norm_ref(rearrange(y_b, 'b d l -> b l d'), norm_weight_backward).to(y_b)
     y = y * F.silu(rearrange(z, 'b d l -> b l d')).to(z)
     return F.linear(y, out_proj_weight)
