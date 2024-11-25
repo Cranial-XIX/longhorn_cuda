@@ -217,6 +217,15 @@ void selective_scan_online_bwd_kernel(SSMOnlineParamsBwd params) {
                 K2_vals[i] += K_vals[i] * K_vals[i];
             }
         }
+        float Ts[kNItems], denoms[kNItems];
+        #pragma unroll
+        for (int i = 0; i < kNItems; ++i) {
+            float denom = (1 + T_vals[i] * K2_vals[i]);
+            float T = T_vals[i] / denom; 
+            Ts[i] = T;
+            denoms[i] = denom;
+        }
+
         for (int state_idx = 0; state_idx < params.dstate; ++state_idx) {
             // Multiply the real part of A with LOG2E so we can use exp2f instead of expf.
             float K_vals[kNItems], Q_vals[kNItems];
@@ -228,10 +237,11 @@ void selective_scan_online_bwd_kernel(SSMOnlineParamsBwd params) {
             scan_t thread_data[kNItems], thread_reverse_data[kNItems];
             #pragma unroll
             for (int i = 0; i < kNItems; ++i) {
-                float aa = K_vals[i] * K_vals[i];
-                float T = T_vals[i] / (1 + T_vals[i] * K2_vals[i]);
-                float forget = 1 - T * aa;
-                const float input_mat = u_vals[i] * T * K_vals[i];
+                // float aa = K_vals[i] * K_vals[i];
+                float T = Ts[i];
+                float kt = T * K_vals[i];
+                float forget = 1 - kt * K_vals[i];
+                const float input_mat = u_vals[i] * kt;
                 thread_data[i] = make_float2( 
                     forget,
                     input_mat
@@ -265,15 +275,16 @@ void selective_scan_online_bwd_kernel(SSMOnlineParamsBwd params) {
                 const float dx = thread_reverse_data[i].y;
                 const float u = u_vals[i];
                 const float x = thread_data[i].y;
-                float T = T_vals[i] / (1 + T_vals[i] * K2_vals[i]);
+                float T = Ts[i];
 
 
+                float kt = K_vals[i] * T;
                 float aa = K_vals[i] * K_vals[i];
-                float forget = 1 - T * aa;
+                float forget = 1 - kt * K2_vals[i];
 
-                const float input_mat = u_vals[i] * T * K_vals[i];
+                const float input_mat = u_vals[i] * kt;
 
-                du_vals[i] += dx * K_vals[i] * T;
+                du_vals[i] += dx * kt;
                 dK_vals[i] = dx * T * u_vals[i];
                 dT_vals[i] += dx * u_vals[i] * K_vals[i];
 
@@ -283,7 +294,7 @@ void selective_scan_online_bwd_kernel(SSMOnlineParamsBwd params) {
                 dT_vals[i] += - aa * dx_dforget;
 
                 dQ_vals[i] = dout_vals[i] * x;
-                dK_vals[i] -= T * dx_dforget * 2 * K_vals[i];
+                dK_vals[i] -= dx_dforget * 2 * kt;
             }
             // Block-exchange to make the atomicAdd's coalesced, otherwise they're much slower
             // Ktraits::BlockExchangeT(smem_exchange).BlockedToStriped(dB_vals, dB_vals);
@@ -301,11 +312,10 @@ void selective_scan_online_bwd_kernel(SSMOnlineParamsBwd params) {
             }
         }
         for (int i = 0; i < kNItems; ++i) {
-            float denom = (1 + T_vals[i] * K2_vals[i]);
-            float denom2 = denom * denom;
+            float denom = denoms[i]; // (1 + T_vals[i] * K2_vals[i]);
             float T2 = T_vals[i] * T_vals[i];
-            dTK_vals[i] = - dT_vals[i] * (T2 / denom2);
-            dT_vals[i] /= denom2;
+            dTK_vals[i] = - dT_vals[i] * (Ts[i] * Ts[i]);// (T2 / denom2);
+            dT_vals[i] /= denom * denom;
             dT_vals[i] = dT_vals[i] * (T_vals[i] - T2);
             if (kHasDeltaBias) {
                 dt_bias_val += dT_vals[i];

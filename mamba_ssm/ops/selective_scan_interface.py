@@ -614,17 +614,21 @@ class LonghornInnerFn(torch.autograd.Function):
         dx, dz = dxz.chunk(2, dim=1)
         dout = rearrange(dout, "b l e -> e (b l)")
         dout_proj_weight = torch.einsum("eB,Bd->ed", dout, oz)
-        dout_y = rearrange(out_proj_weight.t() @ dout, "d (b l) -> b d l", l=L)
+        dout_y = out_proj_weight.t() @ dout
+        # do = rearrange(out_proj_weight.t() @ dout, "d (b l) -> (b l) d", l=L)
+        # do = rearrange(dout_y.contiguous(), "b d l -> (b l) d")
 
         bb, dd, ll = z.shape
-        do = rearrange(dout_y.contiguous(), "b d l -> (b l) d")
         if ctx.has_norm:
             z = rearrange(z, 'b d l -> (b l) d').contiguous()
+            do = rearrange(dout_y, "d (b l) -> (b l) d", l=L)
             do, dz_ln_out, do_rms_weight, _, _, _ = fast_layer_norm.ln_bwd(do.contiguous(), o_prenorm, z, orsigma, norm_weight)
             dz_ln_out = rearrange(dz_ln_out, '(b l) d -> b d l', b=bb).contiguous()
             online_z = None
             dz_online = None
+            do = rearrange(do, '(b l) d -> b d l', b=bb).contiguous()
         else:
+            do = rearrange(dout_y, 'd (b l) -> b d l', b=bb).contiguous()
             do_rms_weight = None
             online_z = z
             dz_online = dz
@@ -638,7 +642,7 @@ class LonghornInnerFn(torch.autograd.Function):
             D,
             delta_bias,
             online_z, # z
-            rearrange(do, '(b l) d -> b d l', b=bb).contiguous(),
+            do,
             scan_intermediates,
             rearrange(o_prenorm, '(b l) d -> b d l', b=bb).contiguous(),
             dz_online
